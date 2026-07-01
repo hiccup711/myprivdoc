@@ -34,6 +34,21 @@ enum KeychainVaultKeyError: LocalizedError {
 enum KeychainVaultKeyStore {
     private static let service = "local.privdoc.vault-key"
 
+    static func authorize(reason: String) async throws {
+        let context = LAContext()
+        context.localizedReason = reason
+        var error: NSError?
+
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
+            if let error {
+                throw error
+            }
+            throw KeychainVaultKeyError.accessControlFailed
+        }
+
+        try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
+    }
+
     static func generateKey() throws -> Data {
         var bytes = [UInt8](repeating: 0, count: 32)
         let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)

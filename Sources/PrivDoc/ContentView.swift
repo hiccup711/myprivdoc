@@ -1223,16 +1223,29 @@ struct SaveVaultSheet: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("保存加密密档")
                 .font(.system(size: 24, weight: .semibold, design: .serif))
-            Text("使用文档密码加密这份密档。不会接入 macOS 钥匙串，也不会弹出 Keychain 授权。")
+            Text("默认使用 macOS 系统授权保存；需要跨设备迁移时可改用文档密码。")
                 .font(.system(size: 13))
                 .foregroundStyle(Theme.muted)
 
-            VStack(alignment: .leading, spacing: 8) {
-                Label("这个密码只用于当前 .privdoc 文件。之后打开它时需要输入同一个密码。", systemImage: "key")
+            Picker("", selection: $store.saveMode) {
+                ForEach(VaultSaveMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            if store.saveMode == .system {
+                Label("使用 Touch ID 或 Mac 登录密码授权。文件绑定当前 Mac 的钥匙串。", systemImage: "touchid")
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.muted)
-                SecureField("文档密码", text: $store.newVaultPassword)
-                    .textFieldStyle(.roundedBorder)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("这个密码只用于当前 .privdoc 文件。之后打开它时需要输入同一个密码。", systemImage: "key")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.muted)
+                    SecureField("文档密码", text: $store.newVaultPassword)
+                        .textFieldStyle(.roundedBorder)
+                }
             }
 
             HStack {
@@ -1243,15 +1256,15 @@ struct SaveVaultSheet: View {
                 Spacer()
                 Button(store.isSavingVault ? "保存中..." : "保存") {
                     Task {
-                        await store.saveAsPanel(password: store.newVaultPassword)
+                        await store.saveAsPanel(mode: store.saveMode, password: store.newVaultPassword)
                     }
                 }
-                .disabled(store.isSavingVault || store.newVaultPassword.isEmpty)
+                .disabled(store.isSavingVault || (store.saveMode == .password && store.newVaultPassword.isEmpty))
                 .keyboardShortcut(.defaultAction)
             }
         }
         .padding(24)
-        .frame(width: 390)
+        .frame(width: 420)
     }
 }
 

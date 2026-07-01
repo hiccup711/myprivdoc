@@ -15,6 +15,7 @@ final class VaultStore: ObservableObject {
     @Published var isSaveSheetPresented = false
     @Published var unlockPassword = ""
     @Published var newVaultPassword = ""
+    @Published var saveMode: VaultSaveMode = .system
     @Published var fileURL: URL?
     @Published var lastError: String?
     @Published var isSavingVault = false
@@ -148,7 +149,7 @@ final class VaultStore: ObservableObject {
         showToast(didChange ? "已保存为新版本" : "没有内容变更", kind: .saved)
     }
 
-    func saveAsPanel(password: String) async {
+    func saveAsPanel(mode: VaultSaveMode, password: String) async {
         guard let payload else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.init(filenameExtension: "privdoc")!]
@@ -160,8 +161,24 @@ final class VaultStore: ObservableObject {
         defer { isSavingVault = false }
 
         do {
-            let encrypted = try CryptoBox.encrypt(payload: payload, password: password)
-            sessionAuth = .password(password)
+            let encrypted: Data
+            switch mode {
+            case .system:
+                try await KeychainVaultKeyStore.authorize(reason: "创建 PrivDoc 系统授权密钥")
+                let keyID = UUID().uuidString
+                let key = try KeychainVaultKeyStore.generateKey()
+                do {
+                    try KeychainVaultKeyStore.saveKey(key, keyID: keyID)
+                } catch {
+                    saveMode = .password
+                    throw error
+                }
+                encrypted = try CryptoBox.encrypt(payload: payload, rawKey: key, keyID: keyID)
+                sessionAuth = .system(keyID: keyID, key: key)
+            case .password:
+                encrypted = try CryptoBox.encrypt(payload: payload, password: password)
+                sessionAuth = .password(password)
+            }
             try encrypted.write(to: url, options: .atomic)
             fileURL = url
             newVaultPassword = ""
@@ -407,6 +424,7 @@ final class VaultStore: ObservableObject {
             switch info.mode {
             case .system:
                 guard let keyID = info.keyID else { throw CryptoError.invalidFormat }
+                try await KeychainVaultKeyStore.authorize(reason: "解锁 PrivDoc 密档")
                 let key = try KeychainVaultKeyStore.loadKey(keyID: keyID, reason: "解锁 PrivDoc 密档")
                 let payload = try CryptoBox.decrypt(data: data, rawKey: key)
                 self.payload = payload

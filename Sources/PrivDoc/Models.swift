@@ -205,6 +205,13 @@ struct ToastMessage: Identifiable {
     var kind: ToastKind
 }
 
+enum VaultSaveMode: String, CaseIterable, Identifiable {
+    case system = "系统授权"
+    case password = "文档密码"
+
+    var id: String { rawValue }
+}
+
 enum VaultAuthMode: String, Codable, Equatable {
     case password
     case system
