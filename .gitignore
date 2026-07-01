@@ -1,0 +1,8 @@
+.build/
+PrivDoc.app/
+*.privdoc
+.DS_Store
+DerivedData/
+*.xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
