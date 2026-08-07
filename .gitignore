@@ -1,5 +1,6 @@
 .build/
 PrivDoc.app/
+*.dmg
 *.privdoc
 .DS_Store
 DerivedData/
