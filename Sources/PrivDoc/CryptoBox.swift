@@ -3,7 +3,7 @@ import CryptoKit
 import Foundation
 import Security
 
-enum CryptoError: LocalizedError {
+enum CryptoError: LocalizedError, Equatable {
     case invalidFormat
     case keyDerivationFailed
     case encryptionFailed
@@ -13,20 +13,20 @@ enum CryptoError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidFormat:
-            return "The vault file format is invalid."
+            return "密档文件格式无效。"
         case .keyDerivationFailed:
-            return "Could not derive an encryption key from the password."
+            return "无法从密码生成加密密钥。"
         case .encryptionFailed:
-            return "Could not encrypt the vault."
+            return "无法加密密档。"
         case .decryptionFailed:
-            return "Could not unlock the vault. Check the password."
+            return "无法解锁密档，请检查密码。"
         case .passwordRequired:
-            return "A master password is required."
+            return "请输入文档密码。"
         }
     }
 }
 
-struct VaultEnvelope: Codable {
+struct VaultEnvelope: Codable, Sendable {
     var magic: String
     var version: Int
     var authMode: String?
@@ -43,18 +43,23 @@ enum CryptoBox {
     private static let version = 1
     private static let iterations: UInt32 = 310_000
     private static let keyLength = 32
+    private static let saltLength = 16
+    private static let nonceLength = 12
+    private static let tagLength = 16
+    private static let passwordKDF = "PBKDF2-HMAC-SHA256"
+    private static let systemKDF = "Keychain-Random-256"
 
     static func encrypt(payload: VaultPayload, password: String) throws -> Data {
         guard !password.isEmpty else { throw CryptoError.passwordRequired }
 
-        let salt = randomData(count: 16)
+        let salt = randomData(count: saltLength)
         let key = try deriveKey(password: password, salt: salt, iterations: iterations)
         let envelope = try makeEnvelope(
             payload: payload,
             key: key,
             authMode: .password,
             keyID: nil,
-            kdf: "PBKDF2-HMAC-SHA256",
+            kdf: passwordKDF,
             iterations: iterations,
             salt: salt
         )
@@ -64,12 +69,15 @@ enum CryptoBox {
 
     static func encrypt(payload: VaultPayload, rawKey: Data, keyID: String) throws -> Data {
         guard rawKey.count == keyLength else { throw CryptoError.keyDerivationFailed }
+        guard keyID.count == 36, UUID(uuidString: keyID) != nil else {
+            throw CryptoError.invalidFormat
+        }
         let envelope = try makeEnvelope(
             payload: payload,
             key: SymmetricKey(data: rawKey),
             authMode: .system,
             keyID: keyID,
-            kdf: "Keychain-Random-256",
+            kdf: systemKDF,
             iterations: 0,
             salt: Data()
         )
@@ -79,12 +87,7 @@ enum CryptoBox {
 
     static func decrypt(data: Data, password: String) throws -> VaultPayload {
         guard !password.isEmpty else { throw CryptoError.passwordRequired }
-        let envelope = try JSONDecoder.privdoc.decode(VaultEnvelope.self, from: data)
-        guard envelope.magic == magic, envelope.version == version else {
-            throw CryptoError.invalidFormat
-        }
-
-        let mode = VaultAuthMode(rawValue: envelope.authMode ?? VaultAuthMode.password.rawValue) ?? .password
+        let (envelope, mode) = try decodeAndValidate(data)
         guard mode == .password else { throw CryptoError.invalidFormat }
 
         let key = try deriveKey(password: password, salt: envelope.salt, iterations: envelope.iterations)
@@ -93,24 +96,39 @@ enum CryptoBox {
 
     static func decrypt(data: Data, rawKey: Data) throws -> VaultPayload {
         guard rawKey.count == keyLength else { throw CryptoError.keyDerivationFailed }
-        let envelope = try JSONDecoder.privdoc.decode(VaultEnvelope.self, from: data)
-        guard envelope.magic == magic, envelope.version == version else {
-            throw CryptoError.invalidFormat
-        }
-        let mode = VaultAuthMode(rawValue: envelope.authMode ?? VaultAuthMode.password.rawValue) ?? .password
+        let (envelope, mode) = try decodeAndValidate(data)
         guard mode == .system else { throw CryptoError.invalidFormat }
 
         return try openEnvelope(envelope, key: SymmetricKey(data: rawKey))
     }
 
     static func inspect(data: Data) throws -> VaultAuthInfo {
-        let envelope = try JSONDecoder.privdoc.decode(VaultEnvelope.self, from: data)
-        guard envelope.magic == magic, envelope.version == version else {
-            throw CryptoError.invalidFormat
-        }
+        let (envelope, mode) = try decodeAndValidate(data)
+        return VaultAuthInfo(mode: mode, keyID: mode == .system ? envelope.keyID : nil)
+    }
 
-        let mode = VaultAuthMode(rawValue: envelope.authMode ?? VaultAuthMode.password.rawValue) ?? .password
-        return VaultAuthInfo(mode: mode, keyID: envelope.keyID)
+    static func encryptAsync(payload: VaultPayload, password: String) async throws -> Data {
+        try await Task.detached(priority: .userInitiated) {
+            try encrypt(payload: payload, password: password)
+        }.value
+    }
+
+    static func encryptAsync(payload: VaultPayload, rawKey: Data, keyID: String) async throws -> Data {
+        try await Task.detached(priority: .userInitiated) {
+            try encrypt(payload: payload, rawKey: rawKey, keyID: keyID)
+        }.value
+    }
+
+    static func decryptAsync(data: Data, password: String) async throws -> VaultPayload {
+        try await Task.detached(priority: .userInitiated) {
+            try decrypt(data: data, password: password)
+        }.value
+    }
+
+    static func decryptAsync(data: Data, rawKey: Data) async throws -> VaultPayload {
+        try await Task.detached(priority: .userInitiated) {
+            try decrypt(data: data, rawKey: rawKey)
+        }.value
     }
 
     private static func deriveKey(password: String, salt: Data, iterations: UInt32) throws -> SymmetricKey {
@@ -173,6 +191,54 @@ enum CryptoBox {
             nonce: nonceData,
             ciphertext: Data(combined.dropFirst(nonceData.count))
         )
+    }
+
+    private static func decodeAndValidate(_ data: Data) throws -> (VaultEnvelope, VaultAuthMode) {
+        let envelope: VaultEnvelope
+        do {
+            envelope = try JSONDecoder.privdoc.decode(VaultEnvelope.self, from: data)
+        } catch {
+            throw CryptoError.invalidFormat
+        }
+
+        guard envelope.magic == magic,
+              envelope.version == version,
+              envelope.nonce.count == nonceLength,
+              envelope.ciphertext.count >= tagLength else {
+            throw CryptoError.invalidFormat
+        }
+
+        let mode: VaultAuthMode
+        if let rawMode = envelope.authMode {
+            guard let parsedMode = VaultAuthMode(rawValue: rawMode) else {
+                throw CryptoError.invalidFormat
+            }
+            mode = parsedMode
+        } else {
+            mode = .password
+        }
+
+        switch mode {
+        case .password:
+            guard envelope.kdf == passwordKDF,
+                  envelope.iterations == iterations,
+                  envelope.salt.count == saltLength,
+                  envelope.keyID == nil else {
+                throw CryptoError.invalidFormat
+            }
+        case .system:
+            guard envelope.authMode == VaultAuthMode.system.rawValue,
+                  envelope.kdf == systemKDF,
+                  envelope.iterations == 0,
+                  envelope.salt.isEmpty,
+                  let keyID = envelope.keyID,
+                  keyID.count == 36,
+                  UUID(uuidString: keyID) != nil else {
+                throw CryptoError.invalidFormat
+            }
+        }
+
+        return (envelope, mode)
     }
 
     private static func openEnvelope(_ envelope: VaultEnvelope, key: SymmetricKey) throws -> VaultPayload {

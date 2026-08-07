@@ -20,13 +20,34 @@ struct ContentView: View {
         }
         .background(Theme.background)
         .animation(.easeOut(duration: 0.18), value: store.toast?.id)
-        .sheet(isPresented: $store.isUnlockSheetPresented) {
+        .sheet(isPresented: $store.isUnlockSheetPresented, onDismiss: {
+            store.handleUnlockSheetDismissed()
+        }) {
             UnlockSheet()
                 .environmentObject(store)
         }
-        .sheet(isPresented: $store.isSaveSheetPresented) {
+        .sheet(isPresented: $store.isSaveSheetPresented, onDismiss: {
+            store.handleSaveSheetDismissed()
+        }) {
             SaveVaultSheet()
                 .environmentObject(store)
+        }
+        .confirmationDialog(
+            store.leaveConfirmationTitle,
+            isPresented: $store.isLeaveConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button(store.leaveConfirmationSaveTitle) {
+                store.saveAndContinuePendingAction()
+            }
+            Button(store.leaveConfirmationDiscardTitle, role: .destructive) {
+                store.discardAndContinuePendingAction()
+            }
+            Button(store.leaveConfirmationCancelTitle, role: .cancel) {
+                store.cancelPendingAction()
+            }
+        } message: {
+            Text(store.leaveConfirmationMessage)
         }
     }
 
@@ -125,18 +146,16 @@ struct TopBar: View {
 
     var body: some View {
         HStack(spacing: 16) {
-            Picker("", selection: $store.mode) {
+            Picker("", selection: Binding(
+                get: { store.mode },
+                set: { store.requestModeChange($0) }
+            )) {
                 ForEach(AppMode.allCases) { mode in
                     Text(mode.rawValue).tag(mode)
                 }
             }
             .pickerStyle(.segmented)
             .frame(width: 330)
-            .onChange(of: store.mode) { _, mode in
-                if mode == .edit {
-                    store.beginEditing()
-                }
-            }
 
             if store.mode == .view {
                 HStack(spacing: 8) {
@@ -144,6 +163,9 @@ struct TopBar: View {
                         .foregroundStyle(Theme.faint)
                     TextField("搜索标题、字段名、非密钥值", text: $store.searchQuery)
                         .textFieldStyle(.plain)
+                        .onChange(of: store.searchQuery) { _, _ in
+                            store.selectedEntryID = nil
+                        }
                 }
                 .padding(.horizontal, 12)
                 .frame(maxWidth: 420)
@@ -166,15 +188,22 @@ struct TopBar: View {
 
             if store.fileURL == nil {
                 Button {
-                    store.isSaveSheetPresented = true
+                    store.requestSaveVaultFile()
                 } label: {
                     Label("保存加密文件", systemImage: "externaldrive.badge.plus")
+                }
+                .buttonStyle(SecondaryButtonStyle())
+            } else if store.hasUnpersistedChanges {
+                Button {
+                    store.saveCurrentDocument()
+                } label: {
+                    Label("重试保存", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(SecondaryButtonStyle())
             }
 
             Button {
-                store.lock()
+                store.requestLock()
             } label: {
                 Label("锁定", systemImage: "lock")
             }
@@ -196,20 +225,20 @@ struct ViewMode: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
-                    if store.selectedSectionID == nil {
+                    if store.selectedEntryID == nil {
                         Text(store.documentTitle)
                             .font(.system(size: 34, weight: .semibold, design: .serif))
                             .foregroundStyle(Theme.text)
                             .padding(.bottom, 4)
                     }
 
-                    let sectionsToShow = store.selectedSectionID == nil ? store.filteredSections : store.selectedSection.map { [$0] } ?? []
-                    if sectionsToShow.isEmpty {
+                    let entriesToShow = store.selectedEntryID == nil ? store.filteredSmartEntries : store.selectedSmartEntry.map { [$0] } ?? []
+                    if entriesToShow.isEmpty {
                         ContentUnavailableView("没有可显示的内容", systemImage: "doc.text", description: Text("编辑文档后会在这里看到内容。"))
                             .frame(maxWidth: .infinity, minHeight: 320)
                     } else {
-                        ForEach(sectionsToShow) { section in
-                            SectionView(section: section, showTitle: section.title != DocumentParser.implicitSectionTitle || store.selectedSectionID != nil)
+                        ForEach(entriesToShow) { entry in
+                            SmartEntryView(entry: entry)
                         }
                     }
                 }
@@ -235,17 +264,17 @@ struct Sidebar: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
                     Button {
-                        store.selectedSectionID = nil
+                        store.selectedEntryID = nil
                     } label: {
-                        SidebarItem(title: "全文", isSelected: store.selectedSectionID == nil)
+                        SidebarItem(title: "全文", isSelected: store.selectedEntryID == nil)
                     }
                     .buttonStyle(.plain)
 
-                    ForEach(store.filteredSections) { section in
+                    ForEach(store.filteredSmartEntries) { entry in
                         Button {
-                            store.selectedSectionID = section.id
+                            store.selectedEntryID = entry.id
                         } label: {
-                            SidebarItem(title: section.title, isSelected: store.selectedSectionID == section.id)
+                            SidebarItem(title: entry.title, isSelected: store.selectedEntryID == entry.id)
                         }
                         .buttonStyle(.plain)
                     }
@@ -290,6 +319,51 @@ struct SectionView: View {
             VStack(spacing: 2) {
                 ForEach(section.lines) { line in
                     ParsedLineView(line: line)
+                }
+            }
+        }
+    }
+}
+
+struct SmartEntryView: View {
+    @EnvironmentObject private var store: VaultStore
+
+    let entry: SmartEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if entry.title == "未命名条目" {
+                Text(entry.title)
+                    .font(.system(size: 28, weight: .semibold, design: .serif))
+                    .foregroundStyle(Theme.text)
+            } else {
+                Text(entry.title)
+                    .font(.system(size: 28, weight: .semibold, design: .serif))
+                    .foregroundStyle(Theme.text)
+                    .contextMenu {
+                        Button("以后把“\(entry.title)”识别为条目标题") {
+                            store.addEntryTitleKeyword(entry.title)
+                        }
+                    }
+            }
+
+            if entry.items.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("未识别出可操作项，原文已隐藏。")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Theme.muted)
+                    if !entry.rawLines.isEmpty {
+                        Text("共 \(entry.rawLines.count) 行")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.faint)
+                    }
+                }
+                .padding(.vertical, 4)
+            } else {
+                VStack(spacing: 2) {
+                    ForEach(entry.items) { item in
+                        SmartItemRow(item: item)
+                    }
                 }
             }
         }
@@ -556,6 +630,89 @@ struct FieldRow: View {
     }
 }
 
+struct SmartItemRow: View {
+    @EnvironmentObject private var store: VaultStore
+    let item: SmartItem
+    @State private var revealSecret = false
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Text(item.label)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.muted)
+                .frame(width: 170, alignment: .leading)
+                .lineLimit(1)
+
+            valueView
+
+            Spacer(minLength: 16)
+
+            SmartItemBadge(item: item)
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 38)
+        .background(Theme.row)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            store.copySmartItemValue(item)
+        }
+        .contextMenu {
+            Button("复制值") { store.copySmartItemValue(item) }
+            Button("复制脱敏整行") { store.copySmartItemLine(item, revealSecret: false) }
+            if item.isHidden {
+                Button("临时显示 10 秒") {
+                    revealSecret = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+                        revealSecret = false
+                    }
+                }
+                Button("复制完整整行") { store.copySmartItemLine(item, revealSecret: true) }
+            }
+            if item.canOpen {
+                Button("打开链接") { store.openSmartItemURL(item) }
+            }
+            Button("把“\(item.label)”识别为密钥") { store.addSecretKeyword(item.label) }
+            Button("把“\(item.label)”识别为普通字段") { store.addPlainTextKeyword(item.label) }
+        }
+    }
+
+    @ViewBuilder
+    private var valueView: some View {
+        if item.isHidden && !revealSecret {
+            HStack(spacing: 8) {
+                Image(systemName: "eye.slash")
+                    .font(.system(size: 12, weight: .medium))
+                Text(item.displayValue)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .foregroundStyle(Theme.secret)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Theme.secretBackground)
+            .clipShape(Capsule())
+        } else {
+            Text(revealSecret ? item.value : item.displayValue)
+                .font(.system(size: 13, design: valueFontDesign))
+                .foregroundStyle(item.canOpen ? Theme.link : Theme.text)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+        }
+    }
+
+    private var valueFontDesign: Font.Design {
+        switch item.kind {
+        case .text, .note:
+            return .default
+        default:
+            return .monospaced
+        }
+    }
+}
+
 struct FieldBadge: View {
     let type: FieldType
 
@@ -587,6 +744,62 @@ struct FieldBadge: View {
         case .ip, .port: return Theme.accent
         case .email: return .teal
         case .text: return Theme.faint
+        }
+    }
+}
+
+struct SmartItemBadge: View {
+    let item: SmartItem
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.12))
+            .clipShape(Capsule())
+    }
+
+    private var label: String {
+        switch item.kind {
+        case .url:
+            return "URL"
+        case .email:
+            return "EMAIL"
+        case .username, .panelUser:
+            return "USER"
+        case .password, .apiKey, .keySecret, .panelPassword:
+            return "SECRET"
+        case .sshHost, .sshUser:
+            return "SSH"
+        case .ip:
+            return "IP"
+        case .port:
+            return "PORT"
+        case .note:
+            return "NOTE"
+        case .text:
+            return "TEXT"
+        }
+    }
+
+    private var color: Color {
+        if item.isHidden {
+            return Theme.secret
+        }
+
+        switch item.kind {
+        case .url:
+            return Theme.link
+        case .email:
+            return .teal
+        case .username, .panelUser, .sshHost, .sshUser, .ip, .port:
+            return Theme.accent
+        case .password, .apiKey, .keySecret, .panelPassword:
+            return Theme.secret
+        case .note, .text:
+            return Theme.faint
         }
     }
 }
@@ -643,7 +856,7 @@ struct ParsePreview: View {
     let document: String
 
     var body: some View {
-        let sections = DocumentParser.parse(document, rules: store.globalParsingRules)
+        let entries = SmartDocumentParser.parse(document, rules: store.globalParsingRules)
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 Text("解析预览")
@@ -651,40 +864,20 @@ struct ParsePreview: View {
                     .foregroundStyle(Theme.faint)
                     .textCase(.uppercase)
 
-                ForEach(sections) { section in
+                ForEach(entries) { entry in
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(section.title)
+                        Text(entry.title)
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(Theme.text)
-                        ForEach(section.lines) { line in
-                            if case let .field(field) = line.kind {
-                                HStack {
-                                    Text(field.name)
-                                        .lineLimit(1)
-                                    Spacer()
-                                    FieldBadge(type: field.type)
-                                }
-                                .font(.system(size: 12))
-                                .foregroundStyle(Theme.muted)
-                            } else if case .secret = line.kind {
-                                HStack {
-                                    Text("显式密钥段落")
-                                        .lineLimit(1)
-                                    Spacer()
-                                    FieldBadge(type: .secret)
-                                }
-                                .font(.system(size: 12))
-                                .foregroundStyle(Theme.muted)
-                            } else if case .richParagraph = line.kind {
-                                HStack {
-                                    Text("包含隐藏片段")
-                                        .lineLimit(1)
-                                    Spacer()
-                                    FieldBadge(type: .secret)
-                                }
-                                .font(.system(size: 12))
-                                .foregroundStyle(Theme.muted)
+                        ForEach(entry.items) { item in
+                            HStack {
+                                Text(item.label)
+                                    .lineLimit(1)
+                                Spacer()
+                                SmartItemBadge(item: item)
                             }
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.muted)
                         }
                     }
                 }
@@ -741,6 +934,7 @@ struct RulesMode: View {
     @EnvironmentObject private var store: VaultStore
     @State private var newSecretKeyword = ""
     @State private var newPlainTextKeyword = ""
+    @State private var newEntryTitleKeyword = ""
 
     var body: some View {
         ScrollView {
@@ -785,6 +979,20 @@ struct RulesMode: View {
                         removeAction: store.removePlainTextKeyword
                     )
                 }
+
+                RulePanel(
+                    title: "条目标题词",
+                    subtitle: "条目已有内容后，遇到包含这些词的独立行时，从这里开始新条目。",
+                    placeholder: "例如：内部工具、生产服务器、云账号",
+                    text: $newEntryTitleKeyword,
+                    keywords: store.globalParsingRules.customEntryTitleKeywords,
+                    builtInKeywords: [],
+                    addAction: {
+                        store.addEntryTitleKeyword(newEntryTitleKeyword)
+                        newEntryTitleKeyword = ""
+                    },
+                    removeAction: store.removeEntryTitleKeyword
+                )
             }
             .padding(32)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -860,6 +1068,7 @@ struct SettingsMode: View {
                 }
 
                 ClipboardSettingsPanel()
+                AutoLockSettingsPanel()
             }
             .padding(32)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -942,6 +1151,63 @@ struct ClipboardSettingsPanel: View {
     }
 }
 
+struct AutoLockSettingsPanel: View {
+    @EnvironmentObject private var store: VaultStore
+
+    private let options: [(seconds: Int, label: String)] = [
+        (60, "1 分钟"),
+        (300, "5 分钟"),
+        (900, "15 分钟"),
+        (1800, "30 分钟")
+    ]
+
+    private var selectedSeconds: Int {
+        store.payload?.settings.autoLockAfterSeconds ?? 300
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("自动锁定")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Theme.text)
+                Text("无操作达到设定时间后自动锁定；Mac 睡眠或锁屏时会立即锁定。")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.muted)
+            }
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 10)], alignment: .leading, spacing: 10) {
+                ForEach(options, id: \.seconds) { option in
+                    Button {
+                        store.updateAutoLockAfterSeconds(option.seconds)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: selectedSeconds == option.seconds ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(selectedSeconds == option.seconds ? Theme.accent : Theme.faint)
+                            Text(option.label)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Theme.text)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 11)
+                        .frame(height: 38)
+                        .background(selectedSeconds == option.seconds ? Theme.selection : Theme.row)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(selectedSeconds == option.seconds ? Theme.accent.opacity(0.24) : Theme.line))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: 720, alignment: .leading)
+        .background(Theme.panel)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.line))
+    }
+}
+
 struct RulePanel: View {
     let title: String
     let subtitle: String
@@ -995,14 +1261,16 @@ struct RulePanel: View {
                 }
             }
 
-            Divider().overlay(Theme.line)
+            if !builtInKeywords.isEmpty {
+                Divider().overlay(Theme.line)
 
-            VStack(alignment: .leading, spacing: 10) {
-                Text("内置规则")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(Theme.faint)
-                    .textCase(.uppercase)
-                KeywordCloud(keywords: builtInKeywords, removable: false, removeAction: { _ in })
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("内置规则")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Theme.faint)
+                        .textCase(.uppercase)
+                    KeywordCloud(keywords: builtInKeywords, removable: false, removeAction: { _ in })
+                }
             }
         }
         .padding(18)
@@ -1102,7 +1370,7 @@ struct VersionDetail: View {
                 VStack(alignment: .leading, spacing: 18) {
                     let diff = store.diffFromPrevious(version: version)
                     if diff.isEmpty {
-                        Text("这是第一个版本，或者没有可显示的字段变化。")
+                        Text("这是第一个版本，或者没有可显示的内容变化。")
                             .font(.system(size: 14))
                             .foregroundStyle(Theme.muted)
                     } else {
@@ -1120,7 +1388,7 @@ struct VersionDetail: View {
                             .font(.system(size: 12, weight: .bold))
                             .foregroundStyle(Theme.faint)
                             .textCase(.uppercase)
-                        Text(DocumentParser.redactedDocument(version.document, rules: store.globalParsingRules))
+                        Text(DiffEngine.redactedDocument(version.document, rules: store.globalParsingRules))
                             .font(.system(size: 13, design: .monospaced))
                             .foregroundStyle(Theme.muted)
                             .textSelection(.enabled)
@@ -1192,6 +1460,7 @@ struct UnlockSheet: View {
                 .font(.system(size: 24, weight: .semibold, design: .serif))
             SecureField("主密码", text: $store.unlockPassword)
                 .textFieldStyle(.roundedBorder)
+                .disabled(store.isUnlockingVault)
                 .onSubmit {
                     store.unlockPendingVault()
                 }
@@ -1203,16 +1472,19 @@ struct UnlockSheet: View {
             HStack {
                 Spacer()
                 Button("取消") {
-                    store.isUnlockSheetPresented = false
+                    store.cancelUnlockSheet()
                 }
-                Button("解锁") {
+                .disabled(store.isUnlockingVault)
+                Button(store.isUnlockingVault ? "解锁中..." : "解锁") {
                     store.unlockPendingVault()
                 }
+                .disabled(store.isUnlockingVault || store.unlockPassword.isEmpty)
                 .keyboardShortcut(.defaultAction)
             }
         }
         .padding(24)
         .frame(width: 360)
+        .interactiveDismissDisabled(store.isUnlockingVault)
     }
 }
 
@@ -1223,48 +1495,44 @@ struct SaveVaultSheet: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("保存加密密档")
                 .font(.system(size: 24, weight: .semibold, design: .serif))
-            Text("默认使用 macOS 系统授权保存；需要跨设备迁移时可改用文档密码。")
+            Text("使用文档密码加密保存。文件可以迁移到其他电脑，再用同一个密码解锁。")
                 .font(.system(size: 13))
                 .foregroundStyle(Theme.muted)
 
-            Picker("", selection: $store.saveMode) {
-                ForEach(VaultSaveMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-
-            if store.saveMode == .system {
-                Label("使用 Touch ID 或 Mac 登录密码授权。文件绑定当前 Mac 的钥匙串。", systemImage: "touchid")
+            VStack(alignment: .leading, spacing: 8) {
+                Label("这个密码只用于当前 .privdoc 文件，不会写入 macOS 钥匙串。", systemImage: "key")
                     .font(.system(size: 13))
                     .foregroundStyle(Theme.muted)
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("这个密码只用于当前 .privdoc 文件。之后打开它时需要输入同一个密码。", systemImage: "key")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Theme.muted)
-                    SecureField("文档密码", text: $store.newVaultPassword)
-                        .textFieldStyle(.roundedBorder)
+                SecureField("文档密码", text: $store.newVaultPassword)
+                    .textFieldStyle(.roundedBorder)
+                SecureField("再次输入文档密码", text: $store.newVaultPasswordConfirmation)
+                    .textFieldStyle(.roundedBorder)
+
+                if !store.newVaultPasswordConfirmation.isEmpty && !store.canSaveNewVault {
+                    Label("两次输入的密码不一致", systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Theme.secret)
                 }
             }
 
             HStack {
                 Button("取消") {
-                    store.isSaveSheetPresented = false
+                    store.cancelSaveVaultSheet()
                 }
                 .disabled(store.isSavingVault)
                 Spacer()
                 Button(store.isSavingVault ? "保存中..." : "保存") {
                     Task {
-                        await store.saveAsPanel(mode: store.saveMode, password: store.newVaultPassword)
+                        await store.saveAsPanel(mode: .password, password: store.newVaultPassword)
                     }
                 }
-                .disabled(store.isSavingVault || (store.saveMode == .password && store.newVaultPassword.isEmpty))
+                .disabled(store.isSavingVault || !store.canSaveNewVault)
                 .keyboardShortcut(.defaultAction)
             }
         }
         .padding(24)
         .frame(width: 420)
+        .interactiveDismissDisabled(store.isSavingVault)
     }
 }
 

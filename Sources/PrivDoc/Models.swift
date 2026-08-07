@@ -1,6 +1,6 @@
 import Foundation
 
-struct VaultPayload: Codable, Equatable {
+struct VaultPayload: Codable, Equatable, Sendable {
     var currentDocument: String
     var versions: [DocumentVersion]
     var settings: AppSettings
@@ -19,7 +19,7 @@ struct VaultPayload: Codable, Equatable {
     )
 }
 
-struct AppSettings: Codable, Equatable {
+struct AppSettings: Codable, Equatable, Sendable {
     var clipboardClearDelay: ClipboardClearDelay
     var autoLockAfterSeconds: Int
 
@@ -55,7 +55,7 @@ struct AppSettings: Codable, Equatable {
     }
 }
 
-enum ClipboardClearDelay: String, Codable, CaseIterable, Identifiable, Equatable {
+enum ClipboardClearDelay: String, Codable, CaseIterable, Identifiable, Equatable, Sendable {
     case seconds5
     case seconds15
     case seconds30
@@ -111,14 +111,33 @@ enum ClipboardClearDelay: String, Codable, CaseIterable, Identifiable, Equatable
 struct ParsingRules: Codable, Equatable {
     var customSecretKeywords: [String]
     var customPlainTextKeywords: [String]
+    var customEntryTitleKeywords: [String]
 
-    init(customSecretKeywords: [String] = [], customPlainTextKeywords: [String] = []) {
+    enum CodingKeys: String, CodingKey {
+        case customSecretKeywords
+        case customPlainTextKeywords
+        case customEntryTitleKeywords
+    }
+
+    init(
+        customSecretKeywords: [String] = [],
+        customPlainTextKeywords: [String] = [],
+        customEntryTitleKeywords: [String] = []
+    ) {
         self.customSecretKeywords = customSecretKeywords
         self.customPlainTextKeywords = customPlainTextKeywords
+        self.customEntryTitleKeywords = customEntryTitleKeywords
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        customSecretKeywords = try container.decodeIfPresent([String].self, forKey: .customSecretKeywords) ?? []
+        customPlainTextKeywords = try container.decodeIfPresent([String].self, forKey: .customPlainTextKeywords) ?? []
+        customEntryTitleKeywords = try container.decodeIfPresent([String].self, forKey: .customEntryTitleKeywords) ?? []
     }
 }
 
-struct DocumentVersion: Codable, Identifiable, Equatable {
+struct DocumentVersion: Codable, Identifiable, Equatable, Sendable {
     var id: UUID
     var createdAt: Date
     var summary: String
@@ -228,7 +247,7 @@ enum SampleData {
 
     ## 服务器 / prod-01
 
-    服务器IP：1.2.3.4
+    服务器IP：192.0.2.10
     SSH用户：root
     SSH端口：22
     服务器登录密码：{{replace-me-password}}

@@ -18,6 +18,11 @@ let package = Package(
                 .linkedFramework("AppKit"),
                 .linkedFramework("CryptoKit")
             ]
+        ),
+        .testTarget(
+            name: "PrivDocTests",
+            dependencies: ["PrivDoc"],
+            path: "Tests/PrivDocTests"
         )
     ]
 )

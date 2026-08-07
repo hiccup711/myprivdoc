@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "name": "Debug PrivDoc",
+            "target": "PrivDoc",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug PrivDoc"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "name": "Release PrivDoc",
+            "target": "PrivDoc",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release PrivDoc"
+        }
+    ]
+}

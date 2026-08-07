@@ -106,22 +106,10 @@ enum DocumentParser {
     }
 
     static func parseField(_ rawLine: String, rules: ParsingRules = ParsingRules()) -> Field? {
-        let separators = ["：", ":", "="]
-        var match: (index: String.Index, separator: String)?
+        guard let separator = firstFieldSeparator(in: rawLine) else { return nil }
 
-        for separator in separators {
-            if let index = rawLine.firstRange(of: separator)?.lowerBound {
-                if match == nil || index < match!.index {
-                    match = (index, separator)
-                }
-            }
-        }
-
-        guard let match else { return nil }
-
-        let key = rawLine[..<match.index].trimmingCharacters(in: .whitespaces)
-        let valueStart = rawLine.index(match.index, offsetBy: match.separator.count)
-        let rawValue = String(rawLine[valueStart...].trimmingCharacters(in: .whitespaces))
+        let key = rawLine[..<separator.lowerBound].trimmingCharacters(in: .whitespaces)
+        let rawValue = String(rawLine[separator.upperBound...].trimmingCharacters(in: .whitespaces))
         let valueAnnotation = parseValueAnnotation(rawValue)
 
         guard !key.isEmpty, !valueAnnotation.value.isEmpty, key.count <= 80 else { return nil }
@@ -369,7 +357,7 @@ enum DocumentParser {
                 return rawLine
             }
 
-            let separator = rawLine.range(of: "：") ?? rawLine.range(of: ":") ?? rawLine.range(of: "=")
+            let separator = firstFieldSeparator(in: rawLine)
             guard let separator else {
                 return "\(field.name)：[已隐藏]"
             }
@@ -377,5 +365,20 @@ enum DocumentParser {
             return "\(rawLine[..<separator.upperBound]) [已隐藏]"
         }
         .joined(separator: "\n")
+    }
+
+    static func explicitSecretValues(in document: String) -> [String] {
+        document.components(separatedBy: .newlines).flatMap { rawLine in
+            parseTextSegments(rawLine, lineIndex: 0)
+                .filter(\.isSecret)
+                .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        }
+    }
+
+    private static func firstFieldSeparator(in line: String) -> Range<String.Index>? {
+        ["：", ":", "="]
+            .compactMap { line.range(of: $0) }
+            .min { $0.lowerBound < $1.lowerBound }
     }
 }
