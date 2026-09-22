@@ -168,11 +168,12 @@ final class VaultStoreTests: XCTestCase {
     func testAddEntryTitleKeywordStoresUniqueSortedRule() {
         let store = makeStore()
 
-        store.addEntryTitleKeyword("内部工具")
-        store.addEntryTitleKeyword("内部工具")
-        store.addEntryTitleKeyword("阿里云")
+        // Chinese collation differs between the local and CI system locales.
+        store.addEntryTitleKeyword("Zulu tools")
+        store.addEntryTitleKeyword("zulu TOOLS")
+        store.addEntryTitleKeyword("Alpha tools")
 
-        XCTAssertEqual(store.globalParsingRules.customEntryTitleKeywords, ["阿里云", "内部工具"])
+        XCTAssertEqual(store.globalParsingRules.customEntryTitleKeywords, ["Alpha tools", "Zulu tools"])
     }
 
     func testEntryTitleKeywordPersistsToInjectedDefaults() {
