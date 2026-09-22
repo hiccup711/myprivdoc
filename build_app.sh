@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+cd "$(dirname "$0")"
+
 APP_NAME="PrivDoc"
-BUILD_DIR=".build/release"
-APP_DIR="$APP_NAME.app"
+VERSION="${VERSION:-0.1.0}"
+APP_DIR="${APP_DIR:-$APP_NAME.app}"
 ICON_SOURCE="LOGO/logo.png"
 ICONSET_DIR=".build/AppIcon.iconset"
 ICON_FILE=".build/AppIcon.icns"
 
+if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+  echo "VERSION must use major.minor.patch, for example 0.1.0" >&2
+  exit 1
+fi
+
 swift build -c release
+BUILD_DIR="$(swift build -c release --show-bin-path)"
 
 rm -rf "$APP_DIR"
 rm -rf "$ICONSET_DIR"
@@ -61,6 +69,10 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-codesign --force --deep --sign - "$APP_DIR" >/dev/null 2>&1 || true
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP_DIR/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP_DIR/Contents/Info.plist"
+plutil -lint "$APP_DIR/Contents/Info.plist"
+codesign --force --sign - "$APP_DIR"
+codesign --verify --deep --strict "$APP_DIR"
 
-echo "Built $APP_DIR"
+echo "Built $APP_DIR ($VERSION)"

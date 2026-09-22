@@ -22,6 +22,26 @@ swift build
 open PrivDoc.app
 ```
 
+## 安装包与自动发布
+
+在 [GitHub Releases](https://github.com/hiccup711/myprivdoc/releases) 下载适合芯片架构的安装包：Apple Silicon 使用 `arm64.dmg`，Intel 使用 `x86_64.dmg`。支持 macOS 14 及以上版本，打开 DMG 后将 PrivDoc 拖入 Applications。
+
+当前安装包使用 ad-hoc 签名，尚未经过 Apple Developer ID 签名和公证；首次打开可能需要在「系统设置 → 隐私与安全性」中允许打开。
+
+GitHub Actions 的 `CI and Release` 工作流使用 Xcode 26.1.1，在 Apple Silicon 和 Intel runner 上运行测试、构建并验证 DMG、ZIP 和 SHA-256 校验文件。只有两种架构全部成功后才会发布 Release。
+
+- 推送到 `main` 或向 `main` 提交 PR：自动测试和打包，安装包保留在 Actions Artifacts 14 天。
+- 推送 `v主版本.次版本.补丁版本` 标签（如 `v0.1.1`）：自动发布对应版本的 GitHub Release。
+- 也可在 Actions → CI and Release → Run workflow 选择 `main`，填写版本号（如 `0.1.1`，不带 `v`），成功后自动创建标签并发布 Release。已发布版本不会被覆盖。
+
+在本机生成当前芯片架构的安装包：
+
+```bash
+VERSION=0.1.0 ./build_release.sh
+```
+
+产物保存在 `dist/`，版本号同时写入 App 的 `Info.plist`。发布其他版本时修改 `VERSION` 即可。
+
 ## 现在能体验什么
 
 - 新建一个本地密档

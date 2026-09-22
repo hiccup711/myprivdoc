@@ -1,0 +1,150 @@
+name: CI and Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (major.minor.patch, for example 0.1.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          publish=false
+          version=0.1.0
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            publish=true
+          elif [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+              echo "Manual releases must run from main" >&2
+              exit 1
+            fi
+            version="$INPUT_VERSION"
+            publish=true
+          fi
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Invalid release version: $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    name: Test and package (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+          - os: macos-15-intel
+            arch: x86_64
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.1.1.app/Contents/Developer
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify toolchain and architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          xcodebuild -version
+          swift --version
+          test "$(uname -m)" = "$EXPECTED_ARCH"
+      - name: Run tests
+        run: swift test
+      - name: Build and verify release assets
+        run: ./build_release.sh
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrivDoc-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    needs: [prepare, build]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Download both architectures
+        uses: actions/download-artifact@v4
+        with:
+          pattern: PrivDoc-${{ needs.prepare.outputs.version }}-*
+          path: dist
+          merge-multiple: true
+      - name: Verify assets and publish
+        shell: bash
+        run: |
+          tag="v$VERSION"
+          if git rev-parse --verify "refs/tags/$tag" >/dev/null 2>&1; then
+            test "$(git rev-parse "$tag^{commit}")" = "$(git rev-parse HEAD)"
+          fi
+          for arch in arm64 x86_64; do
+            test -s "dist/PrivDoc-$VERSION-$arch.dmg"
+            test -s "dist/PrivDoc-$VERSION-$arch.zip"
+            test -s "dist/PrivDoc-$VERSION-$arch.sha256"
+          done
+          (
+            cd dist
+            cat ./*.sha256 > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+          cat > release-notes.md <<'NOTES'
+          支持 macOS 14 及以上版本。
+
+          - Apple Silicon（M 系列芯片）：下载 `arm64.dmg`。
+          - Intel Mac：下载 `x86_64.dmg`。
+          - 打开 DMG 后，将 PrivDoc 拖入 Applications；也提供 ZIP 便携包。
+          - `SHA256SUMS` 可用于校验下载文件。
+
+          此版本使用 ad-hoc 签名，尚未使用 Apple Developer ID 签名或完成公证。
+          首次打开可能需要在「系统设置 → 隐私与安全性」中允许打开。
+          NOTES
+          gh release create "$tag" dist/*.dmg dist/*.zip dist/SHA256SUMS \
+            --target "$GITHUB_SHA" --title "PrivDoc $tag" \
+            --notes-file release-notes.md --generate-notes --draft
+          gh release edit "$tag" --draft=false --latest
